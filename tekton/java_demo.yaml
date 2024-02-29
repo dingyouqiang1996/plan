@@ -1,0 +1,87 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: build-java
+  namespace: tekton
+spec:
+  params:
+    - name: project
+      type: string
+  steps:
+    - name: gitclone
+      image: bitnami/git
+      workingDir: /project
+      command: ["git"]
+      args: ["clone", "https://gitee.com/youqianglinux/$(params.project).git"]
+    - name: maven-build
+      image: maven:3-jdk-8-slim
+      workingDir: /project
+      volumeMounts:
+      - name: maven-m2
+        mountPath: /root/.m2
+      - name: maven-settings
+        mountPath: /project/settings.xml
+        subPath: settings.xml
+      script: |
+        #!/usr/bin/env sh
+        cd $(params.project)
+        mvn clean package -s /project/settings.xml
+    - name: kaniko-build
+      image: swr.cn-south-1.myhuaweicloud.com/dingyouqiangself/executor:latest
+      workingDir: /project
+      args:
+      - --dockerfile=$(params.project)/Dockerfile
+      - --destination=swr.cn-south-1.myhuaweicloud.com/dingyouqiangself/java-demo:latest
+      - --context=$(params.project)
+      securityContext:
+        runAsUser: 0
+      volumeMounts:
+        - name: kaniko-secret
+          mountPath: /kaniko/.docker/
+    - name: kubectl-deploy
+      image: bitnami/kubectl:1.26.13-debian-11-r1
+      volumeMounts:
+      - name: kubeconfig
+        mountPath: /project/kubeconfig
+        subPath: kubeconfig
+      script: |
+        kubectl create deployment java-demo --port=8080 --image=swr.cn-south-1.myhuaweicloud.com/dingyouqiangself/java-demo:latest -n tekton --kubeconfig=/project/kubeconfig
+  workspaces:
+    - name: project
+      mountPath: /project
+  volumes:
+  - name: project
+    emptyDir: {}
+  - name: maven-m2
+    persistentVolumeClaim:
+      claimName: demo-maven-m2-pvc
+  - name: maven-settings
+    configMap:
+      name: maven-settings
+  - name: kubeconfig
+    configMap:
+      name: kubeconfig
+  - name: kaniko-secret
+    secret:
+      secretName: dyq-registry
+      items:
+        - key: .dockerconfigjson
+          path: config.json
+
+---
+apiVersion: tekton.dev/v1beta1
+kind: TaskRun
+metadata:
+  name: build-java-run
+  namespace: tekton
+spec:
+  retries: 1
+  taskRef:
+    name: build-java
+  params:
+    - name: project
+      value: "tomcat-java-demo"
+  workspaces:
+    - name: project
+      emptyDir: {}
+---
